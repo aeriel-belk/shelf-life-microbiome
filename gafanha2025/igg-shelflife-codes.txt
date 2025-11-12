@@ -1,0 +1,736 @@
+####IGG Shelf life analysis####
+
+
+### Importing 
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path manifest.txt \
+  --output-path igg-shelflife-demux.qza \
+  --input-format PairedEndFastqManifestPhred33V2
+  
+qiime demux summarize \
+  --i-data demux-dada2/igg-shelflife-demux.qza \
+  --o-visualization ./igg-shelflife-demux_seqs.qzv
+  
+### Sequence quality control and feature table
+qiime dada2 denoise-single \
+  --i-demultiplexed-seqs demux-dada2/igg-shelflife-demux.qza \
+  --p-trunc-len 230 \
+  --o-table demux-dada2/igg-shelflife-dada2_table.qza \
+  --o-representative-sequences demux-dada2/igg-shelflife-dada2_rep_set.qza \
+  --o-denoising-stats demux-dada2/igg-shelflife-dada2_stats.qza
+
+### Metadata tabulate
+qiime metadata tabulate \
+  --m-input-file ./igg-shelflife-dada2_stats.qza  \
+  --o-visualization ./igg-shelflife-dada2_stats.qzv
+
+### Feature table summary
+qiime feature-table summarize \
+  --i-table ./igg-shelflife-dada2_table.qza \
+  --m-sample-metadata-file ./igg-shelflife-metadata.tsv \
+  --o-visualization ./igg-shelflife-dada2_table.qzv
+
+
+### Taxonomy
+curl -L -o silva-138-99-nb-classifier.qza https://data.qiime2.org/classifiers/sklearn-1.4.2/silva/silva-138-99-nb-classifier.qza
+	
+qiime feature-classifier classify-sklearn \
+  --i-reads ./igg-shelflife-dada2_rep_set.qza \
+  --i-classifier ./silva-138-99-nb-classifier.qza \
+  --o-classification ./igg-shelflife-taxonomy.qza
+  
+qiime metadata tabulate \
+  --m-input-file ./igg-shelflife-taxonomy.qza \
+  --o-visualization ./igg-shelflife-taxonomy.qzv
+  
+qiime feature-table tabulate-seqs \
+  --i-data ./igg-shelflife-dada2_rep_set.qza \
+  --o-visualization ./igg-shelflife-dada2_rep_set.qzv
+
+
+### Taxonomy based filtering
+	#Filter out mitochondria and chloroplats
+qiime taxa filter-table \
+  --i-table ./igg-shelflife-dada2_table.qza \
+  --i-taxonomy ./igg-shelflife-taxonomy.qza \
+  --p-exclude mitochondria,chloroplast \
+  --o-filtered-table ./igg-shelflife-table-no-mitochondria-no-chloroplast.qza
+
+### Make table
+qiime feature-table summarize \
+    --i-table igg-shelflife-table-no-mitochondria-no-chloroplast.qza \
+    --m-sample-metadata-file ./igg-shelflife-metadata.tsv \
+    --o-visualization igg-shelflife-table-no-mitochondria-no-chloroplast.qzv
+
+### Taxonomy barchart
+qiime feature-table filter-samples \
+  --i-table ./igg-shelflife-dada2_table.qza \
+  --p-min-frequency 2000 \
+  --o-filtered-table ./igg-shelflife-table_2k.qza
+  
+qiime taxa barplot \
+  --i-table ./igg-shelflife-table_2k.qza \
+  --i-taxonomy ./igg-shelflife-taxonomy.qza \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --o-visualization ./igg-shelflife-taxa_barplot.qzv
+
+
+qiime feature-table filter-features \
+  --i-table ./igg-shelflife-table_2k.qza \
+  --p-min-frequency 50 \
+  --p-min-samples 4 \
+  --o-filtered-table ./igg-shelflife-table_2k_abund.qza
+
+
+#phylogenetic tree
+
+nano igg-shelflife-phylogeny.sh
+
+#!/bin/bash
+#SBATCH --job-name=phylogeny           # job name
+#SBATCH --ntasks=5                # Number of processors
+#SBATCH --partition=davisj8_bg2   # name of partition to submit job
+#SBATCH --time=48:00:00              # Run time (D-HH:MM:SS)
+#SBATCH --mem=100GB              #Amount of memory for the job
+#SBATCH --output=phylogeny.out     # Output file. %j is replaced with job ID
+#SBATCH --error=phylogeny.err           # Error file. %j is replaced with job ID
+#SBATCH --mail-type=ALL              # will send email for begin,end,fail
+#SBATCH --mail-user=igg0009@auburn.edu
+
+module load python/anaconda/3.8.6
+source activate qiime2-amplicon-2024.2
+
+qiime fragment-insertion sepp \
+  --i-representative-sequences ./igg-shelflife-dada2_rep_set.qza \
+  --i-reference-database sepp-refs-silva-128.qza \
+  --o-tree ./igg-shelflife-tree.qza \
+  --o-placements ./igg-shelflife-tree_placements.qza \
+  --p-threads 5 
+
+chmod +x igg-shelflife-phylogeny.sh
+sbatch igg-shelflife-phylogeny.sh
+
+
+### Diversity
+qiime diversity core-metrics-phylogenetic \
+  --i-table demux-dada2/igg-shelflife-dada2_table.qza \
+  --i-phylogeny phylogeny/igg-shelflife-tree.qza \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --p-sampling-depth 1138 \
+  --output-dir ./igg-shelflife-core-metrics-results-1138
+
+
+#Alpha diversity w/tree
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity ./igg-shelflife-core-metrics-results/shannon_vector.qza \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --o-visualization ./igg-shelflife-core-metrics-results/shannon_vector.qzv
+  
+qiime diversity alpha-group-significance \
+ --i-alpha-diversity ./igg-shelflife-core-metrics-results/observed_features_vector.qza \
+ --m-metadata-file ./igg-shelflife-metadata.tsv \
+ --o-visualization ./igg-shelflife-core-metrics-results/observed_features_vector.qzv
+
+qiime diversity alpha-correlation \
+    --i-alpha-diversity ./igg-shelflife-core-metrics-results/shannon_vector.qza \
+    --m-metadata-file ./igg-shelflife-metadata.tsv \
+    --o-visualization ./igg-shelflife-core-metrics-results/shannon-visualization.qzv
+
+#Faith's
+qiime diversity alpha-phylogenetic \
+	--i-table phylogeny/igg-shelflife-table-no-mitochondria-no-chloroplast.qza \
+	--i-phylogeny phylogeny/igg-shelflife-tree.qza \
+	--p-metric 'faith_pd' \
+	--o-alpha-diversity faith-diversity 
+
+qiime diversity alpha-group-significance \
+ --i-alpha-diversity ./igg-shelflife-core-metrics-results/faith_pd_vector.qza \
+ --m-metadata-file ./igg-shelflife-metadata.tsv \
+ --o-visualization ./igg-shelflife-core-metrics-results/faith_vector.qzv
+
+
+#Alpha Rarefaction and Selecting a Rarefaction Depth
+qiime diversity alpha-rarefaction \
+  --i-table ./igg-shelflife-dada2_table.qza \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --o-visualization ./igg-shelflife-alpha_rarefaction_curves.qzv \
+  --p-min-depth 100 \
+  --p-max-depth 202761
+
+
+### Differential abundance with ANCOM-BC 
+qiime composition ancombc \
+  --i-table ./igg-shelflife-table_2k_abund.qza \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --p-formula 'spoilage' \
+  --o-differentials ./igg-shelflife-ancombc_day.qza
+
+qiime composition da-barplot \
+  --i-data ./igg-shelflife-ancombc_day.qza \
+  --p-significance-threshold 0.001 \
+  --o-visualization da_barplot_day.qzv
+
+
+
+### Beta diversity
+qiime diversity beta-group-significance \
+  --i-distance-matrix igg-shelflife-core-metrics-results/unweighted_unifrac_distance_matrix.qza \
+  --m-metadata-file igg-shelflife-metadata.tsv \
+  --m-metadata-column spoilage \
+  --o-visualization igg-shelflife-core-metrics-results/unweighted-unifrac-donor-significance.qzv
+
+qiime diversity beta-group-significance \
+  --i-distance-matrix igg-shelflife-core-metrics-results/weighted_unifrac_distance_matrix.qza \
+  --m-metadata-file igg-shelflife-metadata.tsv \
+  --m-metadata-column spoilage \
+  --o-visualization igg-shelflife-core-metrics-results/weighted-unifrac-donor-significance.qzv
+
+
+
+#Bray curtis
+qiime longitudinal volatility \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --m-metadata-file ./igg-shelflife-core-metrics-results-nonphy-135k/bray_curtis_pcoa_results.qza \
+  --p-state-column day \
+  --p-individual-id-column sample \
+  --o-visualization ./pc_vol.qzv
+
+qiime longitudinal first-distances \
+  --i-distance-matrix ./igg-shelflife-core-metrics-results-nonphy-135k/bray_curtis_distance_matrix.qza \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --p-state-column day \
+  --p-individual-id-column sample \
+  --p-baseline 7 \
+  --o-first-distances ./from_first_bray.qza
+
+qiime longitudinal volatility \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --m-metadata-file ./from_first_bray.qza \
+  --p-state-column day \
+  --p-individual-id-column sample \
+  --o-visualization ./from_first_bray_vol.qzv
+
+
+### Unweighted unifrac
+qiime longitudinal volatility \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --m-metadata-file ./igg-shelflife-core-metrics-results/unweighted_unifrac_pcoa_results.qza \
+  --p-state-column day \
+  --p-individual-id-column sample \
+  --o-visualization ./pc_vol.qzv
+
+qiime longitudinal first-distances \	
+  --i-distance-matrix ./igg-shelflife-core-metrics-results/unweighted_unifrac_distance_matrix.qza \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --p-state-column day \
+  --p-individual-id-column sample \
+  --p-baseline 1 \ 
+  --o-first-distances ./from_first_unifrac.qza
+
+qiime longitudinal volatility \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --m-metadata-file ./from_first_unifrac.qza \
+  --p-state-column day \
+  --p-individual-id-column sample \
+  --o-visualization ./from_first_unifrac_vol.qzv
+
+qiime longitudinal linear-mixed-effects \
+  --i-table ./igg-shelflife-family-rel-freq.qza \
+  --m-metadata-file ./igg-shelflife-metadata.tsv \
+  --p-state-column day \
+  --p-individual-id-column sample \
+  --p-metric logcfu \
+  --o-visualization ./from_first_unifrac_lme.qzv
+  
+  
+
+### Taxonomy
+	#Export taxonomy from QIIME2
+qiime taxa collapse \
+--i-table igg-shelflife-table-no-mitochondria-no-chloroplast.qza \
+--i-taxonomy igg-shelflife-taxonomy.qza \
+--p-level 5 \
+--o-collapsed-table igg-shelflife-family-table.qza
+
+#Relative frequency 
+qiime feature-table relative-frequency \
+--i-table igg-shelflife-family-table.qza \
+--o-relative-frequency-table igg-shelflife-family-rel-freq.qza
+
+qiime tools export \
+--input-path igg-shelflife-family-rel-freq.qza \
+--output-path family_relfreq_table
+
+biom convert -i family_relfreq_table/feature-table.biom \
+-o family_relfreq_table.tsv --to-tsv
+
+rm -r family_relfreq_table/
+
+ 
+qiime taxa collapse \
+--i-table igg-shelflife-table-no-mitochondria-no-chloroplast.qza \
+--i-taxonomy igg-shelflife-taxonomy.qza \
+--p-level 4 \
+--o-collapsed-table igg-shelflife-order-table.qza
+
+#Relative frequency 
+qiime feature-table relative-frequency \
+--i-table igg-shelflife-order-table.qza \
+--o-relative-frequency-table igg-shelflife-order-rel-freq.qza
+
+qiime tools export \
+--input-path igg-shelflife-order-rel-freq.qza \
+--output-path order_relfreq_table
+
+biom convert -i order_relfreq_table/feature-table.biom \
+-o order_relfreq_table.tsv --to-tsv
+
+rm -r order_relfreq_table/
+
+qiime taxa collapse \
+--i-table phylogeny/igg-shelflife-table-no-mitochondria-no-chloroplast.qza \
+--i-taxonomy taxonomy/igg-shelflife-taxonomy.qza \
+--p-level 7 \
+--o-collapsed-table taxonomy/igg-shelflife-species-table.qza
+
+#relative frequency 
+qiime feature-table relative-frequency \
+--i-table taxonomy/igg-shelflife-species-table.qza \
+--o-relative-frequency-table taxonomy/igg-shelflife-species-rel-freq.qza
+
+qiime tools export \
+--input-path taxonomy/igg-shelflife-species-rel-freq.qza \
+--output-path species_relfreq_table
+
+biom convert -i species_relfreq_table/feature-table.biom \
+-o species_relfreq_table.tsv --to-tsv
+
+rm -r species_relfreq_table/
+
+
+#then, open table, delete random line at top, transpose, save again
+#rename #OTU ID to sample
+ 
+  
+
+ ################################
+ ################################
+ 
+ #### IGG Shelf-life R scripts ####
+ #### Packages
+library(dplyr)
+library(readr)
+library(readxl)
+library(ggplot2)
+library(ggthemes)
+library(viridis)
+library(RColorBrewer)
+library(wesanderson)
+library(forcats)
+library(ggcorrplot)
+library(stringr)
+library(tidyr)
+library(cowplot)
+library(grid)
+library(gridExtra) 
+library(palettetown)
+library(phyloseq)
+library(decontam)
+library(grImport)
+library(patchwork)
+library(sf)
+library(rgdal)
+library(SpiecEasi)
+library(qiime2R)
+library(lubridate)
+library(rcartocolor)
+library(scales)
+
+library(readxl)
+library(nlme)
+library(emmeans)
+library(multcomp)
+library(multcompView)
+library(dplyr)
+
+
+ ### Linear models
+
+cfu_results <- lm(logcfu ~ day, data = cfu)
+summary(cfu_results)
+confint(cfu_results)
+
+simple_tbars <- lme(avgTBARS ~ day,random=~1|sample, data = tbars_clean)
+summary(simple_tbars)
+intervals(simple_tbars, which = "fixed")
+
+
+color_results <- lme(avgL+avga+avgb ~ day,random=~1|sample, data = color_clean)
+summary(color_results)
+intervals(color_results)
+
+
+resultsL <- lm (avgL ~ day, data = color_clean)
+summary(resultsL)
+confint(resultsL)
+
+
+resultsa <- lm (avga ~ day, data = color_clean)
+summary(resultsa)
+confint(resultsa)
+
+resultsb <- lm (avgb ~ day, data = color_clean)
+summary(resultsb)
+confint(resultsb)
+
+
+# Table significance
+color_clean$day <- as.factor(color_clean$day)
+
+#L* model
+model_L <- lme(avgL ~ day, random = ~1 | sample, data = color_clean)
+emmeans_L <- emmeans(model_L, ~ day)
+letters_L <- cld(emmeans_L, adjust = "tukey", Letters = letters)
+letters_L_df <- as.data.frame(letters_L)[, c("day", "emmean", "SE", ".group")]
+
+#a* model
+model_a <- lme(avga ~ day, random = ~1 | sample, data = color_clean)
+emmeans_a <- emmeans(model_a, ~ day)
+letters_a <- cld(emmeans_a, adjust = "tukey", Letters = letters)
+letters_a_df <- as.data.frame(letters_a)[, c("day", "emmean", "SE", ".group")]
+
+#b* model
+model_b <- lme(avgb ~ day, random = ~1 | sample, data = color_clean)
+emmeans_b <- emmeans(model_b, ~ day)
+letters_b <- cld(emmeans_b, adjust = "tukey", Letters = letters)
+letters_b_df <- as.data.frame(letters_b)[, c("day", "emmean", "SE", ".group")]
+
+#Combine all results
+final_color_table <- letters_L_df %>%
+  rename(L_mean = emmean, L_SE = SE, L_group = .group) %>%
+  left_join(
+    letters_a_df %>% rename(a_mean = emmean, a_SE = SE, a_group = .group),
+    by = "day"
+  ) %>%
+  left_join(
+    letters_b_df %>% rename(b_mean = emmean, b_SE = SE, b_group = .group),
+    by = "day"
+  )
+
+final_color_table
+
+
+FOSS_data <- read_excel("FOSS_data.xlsx")
+
+
+FOSS_data$day <- as.factor(FOSS_data$day)
+
+model_protein <- lme(protein ~ day, random = ~1 | sample, data = FOSS_data)
+summary(model_protein)
+intervals(model_protein)
+emmeans_protein <- emmeans(model_protein, ~ day)
+letters_protein <- cld(emmeans_protein, adjust = "tukey", Letters = letters)
+letters_protein_df <- as.data.frame(letters_protein)[, c("day", "emmean", "SE", ".group")]
+
+model_moisture <- lme(moisture ~ day, random = ~1 | sample, data = FOSS_data)
+intervals(model_moisture)
+emmeans_moisture <- emmeans(model_moisture, ~ day)
+letters_moisture <- cld(emmeans_moisture, adjust = "tukey", Letters = letters)
+letters_moisture_df <- as.data.frame(letters_moisture)[, c("day", "emmean", "SE", ".group")]
+
+model_fat <- lme(fat ~ day, random = ~1 | sample, data = FOSS_data)
+intervals(model_fat)
+emmeans_fat <- emmeans(model_fat, ~ day)
+letters_fat <- cld(emmeans_fat, adjust = "tukey", Letters = letters)
+letters_fat_df <- as.data.frame(letters_fat)[, c("day", "emmean", "SE", ".group")]
+
+FOSS_letters <- letters_protein_df %>%
+  rename(Protein_mean = emmean, Protein_SE = SE, Protein_group = .group) %>%
+  left_join(
+    letters_moisture_df %>%
+      rename(Moisture_mean = emmean, Moisture_SE = SE, Moisture_group = .group),
+    by = "day"
+  ) %>%
+  left_join(
+    letters_fat_df %>%
+      rename(Fat_mean = emmean, Fat_SE = SE, Fat_group = .group),
+    by = "day"
+  )
+
+
+ 
+## Data importing
+tbars <-read_excel('tbars_values.xlsx', sheet = 'analysis')
+
+## Data cleaning
+tbars %>% 
+  mutate(value = as.numeric(value),
+         sample = as.factor(sample)) %>% 
+  group_by(name, day, sample) %>% 
+  summarise(avgTBARS = mean(value)) -> tbars_clean
+
+
+## Graph
+tbars_clean %>% 
+  ggplot(aes(x = day, y = avgTBARS, color = sample)) +
+  geom_point() +
+  geom_line() +
+  theme_base() +
+  scale_color_manual(values = c('red', 'blue', 'black')) +
+  scale_x_continuous(limits = c(0, 14), breaks = seq(0, 14, by = 2)) +
+  labs(x = "Day", y = "mg/kg malonaldehyde") -> tbars_plot
+
+  
+ggsave('tbars_fig_pub.png', tbars_plot, 'png', '.',
+       width = 12, height = 8, units = 'in')
+
+## Data importing
+cfu <- read_excel('spoilage_logs.xlsx') %>% 
+  filter(value != 'TMTC') %>% 
+  mutate(value = as.numeric(value),
+         sample = as.factor(sample)) %>% 
+  group_by(name, day, sample) %>% 
+  summarise(logcfu = mean(value))
+
+## Graph
+cfu %>%
+  ggplot(aes(x = day, y = logcfu, color = sample)) +
+  geom_point() +
+  geom_line() +
+  theme_base() +
+  scale_color_manual(values = c('red', 'blue', 'black')) +
+  labs(x = "day", y = "Log10 CFU/ml-1") -> cfu_plot
+cfu_plot
+
+ggsave('cfu_fig_pub.png', cfu_plot, 'png', '.',
+       width = 12, height = 8, units = 'in')
+
+## Making dual y axis for cfu and tbars
+
+# Average TBARS by day (all samples combined)
+tbars_clean_avg <- tbars %>%
+  filter(!is.na(value)) %>%
+  mutate(value = as.numeric(value)) %>%
+  group_by(day) %>%
+  summarise(avgTBARS = mean(value))
+
+# Average CFU by day
+cfu_avg <- readxl::read_excel('spoilage_logs.xlsx') %>%
+  filter(value != 'TMTC') %>%
+  mutate(value = as.numeric(value)) %>%
+  group_by(day) %>%
+  summarise(avgLogCFU = mean(value))
+
+combined_data <- merge(tbars_clean_avg, cfu_avg, by = "day")
+
+# Find scaling parameters to transform CFU to TBARS scale
+range_TBARS <- range(combined_data$avgTBARS, na.rm=TRUE)
+range_CFU <- range(combined_data$avgLogCFU, na.rm=TRUE)
+
+# Linear transformation to map CFU into TBARS scale
+scale_factor <- diff(range_TBARS) / diff(range_CFU)
+offset <- range_TBARS[1] - range_CFU[1] * scale_factor
+
+# TBARS with SE
+tbars_summary <- tbars %>%
+  filter(!is.na(value)) %>%
+  mutate(value = as.numeric(value)) %>%
+  group_by(day) %>%
+  summarise(
+    avgTBARS = mean(value),
+    sdTBARS = sd(value),
+    seTBARS = sdTBARS / sqrt(n())
+  )
+
+# CFU with SE
+cfu_summary <- readxl::read_excel('spoilage_logs.xlsx') %>%
+  filter(value != 'TMTC') %>%
+  mutate(value = as.numeric(value)) %>%
+  group_by(day) %>%
+  summarise(
+    avgLogCFU = mean(value),
+    sdCFU = sd(value),
+    seCFU = sdCFU / sqrt(n())
+  )
+
+combined_summary <- merge(tbars_summary, cfu_summary, by = "day")
+
+# Scaling for CFU to TBARS axis
+range_TBARS <- range(combined_summary$avgTBARS, na.rm=TRUE)
+range_CFU <- range(combined_summary$avgLogCFU, na.rm=TRUE)
+
+scale_factor <- diff(range_TBARS) / diff(range_CFU)
+offset <- range_TBARS[1] - range_CFU[1] * scale_factor
+
+# Apply transformation to CFU values and SE
+combined_summary <- combined_summary %>%
+  mutate(
+    scaledCFU = avgLogCFU * scale_factor + offset,
+    scaledCFU_se = seCFU * scale_factor  # SE scales by same factor, no offset
+  )
+
+ggplot(combined_summary, aes(x = day)) +
+  # TBARS line and points
+  geom_line(aes(y = avgTBARS, color = "TBARS"), size = 1.5) +
+  geom_point(aes(y = avgTBARS, color = "TBARS"), size = 3) +
+  geom_errorbar(aes(ymin = avgTBARS - seTBARS, ymax = avgTBARS + seTBARS, color = "TBARS"), width = 0.3) +
+  
+  # CFU line and points (transformed)
+  geom_line(aes(y = scaledCFU, color = "Log10 CFU"), size = 1.5) +
+  geom_point(aes(y = scaledCFU, color = "Log10 CFU"), size = 3) +
+  geom_errorbar(aes(ymin = scaledCFU - scaledCFU_se, ymax = scaledCFU + scaledCFU_se, color = "Log10 CFU"), width = 0.3) +
+  
+  # Axis labels
+  scale_y_continuous(
+    name = "mg/kg malonaldehyde (TBARS)",
+    sec.axis = sec_axis(~ (. - offset) / scale_factor, name = "Log10 CFU/ml-1")
+  ) +
+  
+  # Customize colors and theme
+  scale_color_manual(
+    name = "Measure",
+    values = c("TBARS" = "darkgreen", "Log10 CFU" = "darkblue")
+  ) +
+  scale_x_continuous(limits = c(0, 14), breaks = seq(0, 14, by = 2)) +
+  labs(x = "Day") +
+  theme_minimal(base_size = 16) +  # Increase base font size
+  theme(
+    legend.position = "top",
+    axis.title.y.left = element_text(color = "black", size = 14),
+    axis.title.y.right = element_text(color = "black", size = 14),
+    legend.title = element_blank()
+  ) -> cfu_tbars_plot
+
+print(cfu_tbars_plot)
+
+ggsave('cfu_tbars_fig_pub.png', cfu_tbars_plot, 'png', '.',
+       width = 12, height = 8, units = 'in')
+
+#### Color analysis ####
+color <- read_csv('../data/colordata.csv') 
+
+## Graph
+# Reshape the data from wide to long format
+color_clean_long <- color %>%
+  pivot_longer(cols = c(`L*`, `a*`, `b*`), 
+               names_to = "variable", 
+               values_to = "value")
+
+# Create the plot 
+color_clean_long %>%
+  group_by(variable, day) %>% 
+  mutate(value1 = mean(value),
+         se = sd(value)/sqrt(length((value)))) %>% 
+  ggplot(aes(x = day, y = value1, group = variable)) +
+  geom_ribbon(aes(ymax = value1 + se, 
+                  ymin = value1 - se,
+                  color = NULL,
+                  fill = variable)) +
+  geom_point(aes(color = variable)) +
+  geom_line(aes(color = variable)) +
+  scale_color_manual(values = c('firebrick4', 'blue4', 'gray1'), name = "Variable") +
+  scale_fill_manual(values = c('indianred2', 'lightskyblue2', 'gray70'), name = "Variable") +
+  scale_x_continuous(limits = c(0, 14), breaks = seq(0, 14, by = 2)) +
+  theme_few() +
+  theme(text = element_text(family = "Times New Roman", size = 20),
+        legend.title = element_blank()) +
+  guides(fill = guide_legend(reverse = TRUE),
+         color = guide_legend(reverse = TRUE)) +
+  labs(x = "Day", y = "Value", color = "Variable") -> color_plot
+
+print(color_plot)
+
+ggsave('color_fig_pub.png', color_plot, 'png', '.',
+       width = 12, height = 8, units = 'in')
+       
+       
+##### Alpha diversity
+## Import Data
+alphadiv <- read_tsv('igg-shelflife-metadata.tsv') %>% 
+  gather(alpha_metric, alpha_diversity, 
+         "observed", "shannon", "faith") %>% 
+  mutate(alpha_metric = fct_relevel(alpha_metric, 'observed',
+                                    'shannon', 'faith'),
+         alpha_metric = fct_recode(
+           alpha_metric, "Faith's Phylogenetic Diversity" = "faith"),
+         alpha_metric = fct_recode(
+           alpha_metric, "Richness" = "observed"),
+         alpha_metric = fct_recode(
+           alpha_metric, "Shannons" = "shannon")) -> alpha_plot
+
+## Alpha Diversity by day
+alphadiv %>% 
+  mutate(day = as.factor(day)) %>% 
+  ggplot(aes(x = day, y = alpha_diversity, fill = day)) +
+  geom_boxplot(aes(grou = day)) +
+  geom_jitter(alpha = 0.5, size = 0.5) +
+  facet_wrap(. ~ alpha_metric, scales = "free", ncol = 1) +
+  theme_few() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.99, hjust = 0.95),
+        axis.title.x = element_blank()) +
+  labs(y = "Alpha Diversity",
+       fill = "Sample") +
+  scale_fill_few('Medium') -> alpha_plot
+
+## Alpha Diversity by spoilage
+alphadiv %>% 
+  mutate(spoilage = as.factor(spoilage)) %>% 
+  ggplot(aes(x = spoilage, y = alpha_diversity, fill = spoilage)) +
+  geom_boxplot(aes(grou = spoilage)) +
+  geom_jitter(alpha = 0.5, size = 0.5) +
+  facet_wrap(. ~ alpha_metric, scales = "free", ncol = 1) +
+  theme_few() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.99, hjust = 0.95),
+        axis.title.x = element_blank()) +
+  labs(y = "Alpha Diversity",
+       fill = "Sample") +
+  scale_fill_few('Medium') -> alpha_plot
+
+ggsave('alpha_fig_pub.png', alpha_plot, 'png', '.',
+       width = 15, height = 6, units = 'in')
+
+
+#### Taxonomy
+metadata <- read_tsv('igg-shelflife-metadata.tsv') %>% 
+  rename(sample = 'sample-id')
+
+## Family 
+taxonomy <- read_tsv('family_relfreq_table.tsv') %>% 
+  gather(key = 'taxon', value = 'abundance', -sample)
+
+taxonomy %>% 
+  left_join(metadata, by = 'sample') %>% 
+  group_by(day, taxon) %>% #IGG just do day and taxon
+  summarise(rel_abundance = mean(abundance, na.rm = TRUE)) %>% 
+  mutate(taxon = replace(taxon, rel_abundance <= 0.01, 'other'), 
+         taxon = gsub('d__Bacteria;', '', taxon), #these are find and replace for R
+         taxon = gsub('p__', ' ', taxon),
+         taxon = gsub('c__', ' ', taxon),
+         taxon = gsub('o__', ' ', taxon),
+         taxon = gsub('f__', ' ', taxon)) %>% 
+  ggplot(aes(x = day,
+             y = rel_abundance, fill = taxon)) + 
+  theme_few() +
+  theme(legend.position = 'right',
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        panel.background = element_rect(fill = 'white')) +
+  scale_y_continuous(label = scales::percent) +
+  scale_fill_discrete(guide = guide_legend(ncol =0.8)) +
+  labs(fill = 'Bacterial \n Family',
+       y = 'Relative Abundance') -> family
+
+
+
+
+
+
+ 
+  
+  
+  
+
+
+
+
